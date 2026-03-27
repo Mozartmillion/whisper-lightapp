@@ -1,0 +1,13 @@
+{
+  "version": "2.1.0",
+  "default_model": "base",
+  "default_language": "auto",
+  "prefer_gpu": true,
+  "hf_mirror": "",
+  "beam_size": 5,
+  "vad_filter": true,
+  "vad_min_silence_ms": 500,
+  "theme": "dark",
+  "last_output_dir": "",
+  "max_concurrent": 1
+}

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Models (太大，不提交)
+models/faster-whisper-*/
+!models/README.md
+
+# Binaries
+bin/*
+!bin/README.md
+
+# Temp files
+temp/
+*.tmp
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# WorkBuddy
+.workbuddy/

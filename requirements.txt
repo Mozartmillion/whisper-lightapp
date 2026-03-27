@@ -1,0 +1,25 @@
+# LWF v2.0 依赖清单
+# pip install -r requirements.txt
+
+# ── 核心引擎 ──
+faster-whisper>=1.0.0,<2.0.0     # Whisper 语音识别（基于 CTranslate2）
+ctranslate2>=4.0.0,<5.0.0        # CTranslate2 推理引擎
+
+# ── 音频处理 ──
+av>=11.0                          # PyAV 音频解码（内置 FFmpeg 绑定）
+
+# ── 模型管理 ──
+huggingface_hub>=0.23             # HuggingFace 模型下载
+tokenizers>=0.13,<1.0             # BPE 分词器
+
+# ── UI 框架 ──
+customtkinter>=5.2.0              # 现代化 Tkinter UI
+
+# ── 工具 ──
+tqdm                              # 进度条显示
+
+# ── VAD（语音活动检测）──
+onnxruntime>=1.14,<2.0            # ONNX 模型运行时（用于 VAD + wtpsplit）
+
+# ── 语义分句（Semantic Sentence Segmentation）──
+wtpsplit-lite>=0.2                 # SaT 模型句子分割（ONNX 推理，85+ 语言）
