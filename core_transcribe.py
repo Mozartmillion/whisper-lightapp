@@ -432,16 +432,16 @@ def transcribe_stream(
 # 拉丁语言（英/法/德等）: 字符信息密度低，每字只是字母
 _LANG_PROFILES = {
     "cjk": {  # 日语、中文、韩语
-        "max_chars_per_subtitle": 40,   # CJK 字符信息密度高，40字已经很长
+        "max_chars_per_subtitle": 45,   # CJK 字符信息密度高，45字是显示上限
         "max_duration": 8.0,            # wtpsplit 句超过此时长就二次规则切分
         "force_split_duration": 6.0,    # 规则切分时单句最大时长
-        "force_split_chars": 40,        # 规则切分时单句最大字符数
+        "force_split_chars": 45,        # 规则切分时单句最大字符数（放宽到45减少劈词）
         "min_chars": 3,                 # 3个CJK字符就有语义
         "min_duration": 0.8,
         "joiner": "",                   # CJK 不需要空格拼接
         "clause_split_duration": 3.0,   # 次级标点处断句的最小时长
         "clause_split_chars": 25,       # 次级标点处断句的最小字符数
-        "min_chunk_chars": 15,          # 强制切分时每段最少字符
+        "min_chunk_chars": 12,          # 强制切分时每段最少字符（缩小以留更多回退空间）
     },
     "latin": {  # 英语、法语、德语、西班牙语等
         "max_chars_per_subtitle": 80,   # 英语 80 字符 ≈ 12-15 单词
@@ -474,6 +474,16 @@ _BREAK_BEFORE_WORDS = {
     'that', 'if', 'while', 'although', 'though', 'since', 'unless',
     'before', 'after', 'like', 'as', 'than',
 }
+
+# ---------- 日语助词断点（CJK 劈词防护）----------
+# 这些平假名助词/助动词后面通常是词边界，适合作为断句点
+# は(主题), が(主格), を(宾格), に(目标), で(手段/场所),
+# と(并列/引用), も(也), の(所属), へ(方向), や(列举), か(疑问)
+_JA_PARTICLES_FOR_SPLIT = set('はがをにでともへやか')
+
+def _is_hiragana_char(ch: str) -> bool:
+    """判断单个字符是否为平假名"""
+    return 0x3040 <= ord(ch) <= 0x309F
 
 # ---------- 兼容旧代码的默认值（fallback 用） ----------
 _MIN_CHARS = 5
@@ -657,6 +667,9 @@ def _force_split_by_chars(
     当 Whisper 的 word timestamps 全部被压缩到极短时间范围（1-2 秒）时，
     基于时间戳的切分和合并逻辑都会失效。这个函数不看时间戳，
     纯按字符数在标点处切分，时间按字符比例均匀分配。
+
+    v2.2.1 — CJK 助词感知：在没有标点可断时，优先在日语助词/助动词后断开，
+    避免把「追加」「専用」「向かっている」等词从中间劈开。
     """
     if profile is None:
         profile = _LANG_PROFILES["latin"]
@@ -674,6 +687,36 @@ def _force_split_by_chars(
     _SPLIT_POINTS = set('。！？、，,. ）」』】》!?')
     _GOOD_SPLIT_POINTS = set('。！？.!?')
 
+    # ── CJK 助词断点 ──
+    # 日语助词/助动词后面是天然的词边界，在此断开不会劈开词语
+    # 格式：在 text[p] 为以下字符 **且后面接的是汉字/片假名** 时，p+1 是安全断点
+    _JA_PARTICLES = set('はがをにでとものへやかもらなりたてけ')
+    # 假名范围：平假名 U+3040-309F, 片假名 U+30A0-30FF, CJK U+4E00-9FFF
+    def _is_cjk_or_katakana(ch: str) -> bool:
+        cp = ord(ch)
+        return (0x4E00 <= cp <= 0x9FFF      # CJK 统一汉字
+                or 0x30A0 <= cp <= 0x30FF    # 片假名
+                or 0x3400 <= cp <= 0x4DBF    # CJK 扩展 A
+                or 0xF900 <= cp <= 0xFAFF)   # CJK 兼容汉字
+
+    def _is_hiragana(ch: str) -> bool:
+        return 0x3040 <= ord(ch) <= 0x309F
+
+    def _is_good_particle_break(pos: int) -> bool:
+        """判断 text[pos] 后面（pos+1）是否为助词后的安全断点。
+        条件：text[pos] 是助词 + 后面一个字符是汉字/片假名（新词的开头）"""
+        if pos + 1 >= total_chars:
+            return False
+        ch = text[pos]
+        next_ch = text[pos + 1]
+        if ch not in _JA_PARTICLES:
+            return False
+        # 助词必须是平假名（排除汉字「は」=「刃」等误判）
+        if not _is_hiragana(ch):
+            return False
+        # 后面必须接汉字或片假名（表示新词开始）
+        return _is_cjk_or_katakana(next_ch)
+
     chunks = []
     chunk_start_char = 0
 
@@ -689,18 +732,24 @@ def _force_split_by_chars(
         search_end = min(chunk_start_char + max_chars, total_chars)
 
         best_pos = -1
-        # 先找句号类标点
+        # 优先级1: 句号类标点
         for p in range(search_end - 1, search_start - 1, -1):
             if text[p] in _GOOD_SPLIT_POINTS:
                 best_pos = p + 1
                 break
-        # 再找逗号类
+        # 优先级2: 逗号类标点
         if best_pos == -1:
             for p in range(search_end - 1, search_start - 1, -1):
                 if text[p] in _SPLIT_POINTS:
                     best_pos = p + 1
                     break
-        # 都找不到就硬切
+        # 优先级3: 日语助词后断开（避免劈词）
+        if best_pos == -1:
+            for p in range(search_end - 1, search_start - 1, -1):
+                if _is_good_particle_break(p):
+                    best_pos = p + 1  # 在助词后面断
+                    break
+        # 优先级4: 都找不到就硬切
         if best_pos == -1:
             best_pos = search_end
 
@@ -807,6 +856,15 @@ def _rule_split_words(words_list, profile: dict | None = None) -> list[tuple[flo
         elif (i + 1 < len(words_list)
               and current_duration >= p_clause_split_duration
               and words_list[i + 1].word.strip().lower() in _BREAK_BEFORE_WORDS
+              and current_chars >= p_clause_split_chars):
+            should_split = True
+        # 规则 3.5: 日语助词后断句（CJK 专用）
+        # 当词以助词结尾（如「は」「が」「を」「に」「で」「と」「も」）
+        # 且积累字符数超过 clause_split_chars 时，在助词后断开
+        elif (word_text
+              and len(word_text) >= 1
+              and word_text[-1] in _JA_PARTICLES_FOR_SPLIT
+              and _is_hiragana_char(word_text[-1])
               and current_chars >= p_clause_split_chars):
             should_split = True
         # 规则 4: 硬限制

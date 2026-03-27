@@ -13,7 +13,7 @@ venv/
 env/
 
 # Models (太大，不提交)
-models/faster-whisper-*/
+models/
 !models/README.md
 
 # Binaries

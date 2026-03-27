@@ -1,5 +1,5 @@
 {
-  "version": "2.1.0",
+  "version": "2.2.0",
   "default_model": "base",
   "default_language": "auto",
   "prefer_gpu": true,
