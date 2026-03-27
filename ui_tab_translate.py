@@ -5,6 +5,7 @@ ui_tab_translate.py - 翻译 Tab 页
 1. 转录完成后直接翻译（从转录 Tab 传入 segments）
 2. 选择本地 SRT 文件翻译
 
+Phase 3: 左右双栏逐句对照编辑器，译文可手动编辑。
 API 配置直接在页面内填写，支持预设服务商快速切换。
 """
 
@@ -27,6 +28,10 @@ from core_translate import (
 
 logger = logging.getLogger("LWF")
 
+# 编辑器行配色
+_ROW_COLORS = ("#2b2b2b", "#242424")  # 交替行背景
+_HIGHLIGHT_COLOR = "#1a3a5c"           # 选中行高亮
+
 
 class TranslateTab(ctk.CTkFrame):
     """翻译功能 Tab 页"""
@@ -47,6 +52,12 @@ class TranslateTab(ctk.CTkFrame):
         self.translate_results: list[TranslateResult] = []
         self.source_texts: list[str] = []      # 当前要翻译的原文列表
 
+        # 编辑器行组件
+        self._editor_rows: list[dict] = []
+        # 每行: {"source_label": CTkLabel, "target_entry": CTkEntry,
+        #         "left_row_frame": CTkFrame, "right_row_frame": CTkFrame}
+        self._selected_row: int = -1
+
         self._build_ui()
         self._load_config()
 
@@ -55,7 +66,7 @@ class TranslateTab(ctk.CTkFrame):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _build_ui(self):
-        self.grid_rowconfigure(2, weight=1)  # 结果区域占满
+        self.grid_rowconfigure(2, weight=1)  # 编辑器区域占满
         self.grid_columnconfigure(0, weight=1)
 
         # ── 区域1: API 配置 ──
@@ -64,8 +75,8 @@ class TranslateTab(ctk.CTkFrame):
         # ── 区域2: 翻译控制 ──
         self._build_control_section()
 
-        # ── 区域3: 结果预览 ──
-        self._build_result_section()
+        # ── 区域3: 双栏编辑器 ──
+        self._build_editor_section()
 
         # ── 区域4: 底部操作栏 ──
         self._build_bottom_bar()
@@ -116,7 +127,7 @@ class TranslateTab(ctk.CTkFrame):
         )
         self.model_menu.grid(row=1, column=3, padx=(4, 8), pady=4, sticky="ew")
 
-        # 行3: 测试连接按钮
+        # 测试连接按钮
         self.test_btn = ctk.CTkButton(
             frame, text="测试连接", width=90,
             command=self._on_test_connection,
@@ -189,15 +200,15 @@ class TranslateTab(ctk.CTkFrame):
         )
         self.cancel_btn.pack(side="left", padx=4)
 
-    def _build_result_section(self):
-        """结果预览区域"""
-        result_frame = ctk.CTkFrame(self)
-        result_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
-        result_frame.grid_rowconfigure(1, weight=1)
-        result_frame.grid_columnconfigure(0, weight=1)
+    def _build_editor_section(self):
+        """双栏逐句对照编辑器"""
+        editor_frame = ctk.CTkFrame(self)
+        editor_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
+        editor_frame.grid_rowconfigure(1, weight=1)
+        editor_frame.grid_columnconfigure(0, weight=1)
 
-        # 进度条 + 状态
-        progress_frame = ctk.CTkFrame(result_frame, fg_color="transparent")
+        # ── 进度条 + 状态 ──
+        progress_frame = ctk.CTkFrame(editor_frame, fg_color="transparent")
         progress_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
         progress_frame.grid_columnconfigure(0, weight=1)
 
@@ -213,18 +224,46 @@ class TranslateTab(ctk.CTkFrame):
         )
         self.status_label.grid(row=0, column=1, sticky="e")
 
-        # 结果文本框
-        self.result_box = ctk.CTkTextbox(
-            result_frame, wrap="word",
-            font=ctk.CTkFont(size=13),
-            state="disabled",
+        # ── 列标题 ──
+        header_frame = ctk.CTkFrame(editor_frame, fg_color="transparent", height=28)
+        header_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 0))
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            header_frame, text="原文",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#888", anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=(4, 0))
+
+        ctk.CTkLabel(
+            header_frame, text="译文（可编辑）",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#888", anchor="w",
+        ).grid(row=0, column=1, sticky="w", padx=(4, 0))
+
+        # ── 双栏容器（用一个 scrollable frame 包两列）──
+        self.editor_scroll = ctk.CTkScrollableFrame(
+            editor_frame, fg_color="transparent",
         )
-        self.result_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.editor_scroll.grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 8))
+        editor_frame.grid_rowconfigure(2, weight=1)
+
+        # 两列等宽
+        self.editor_scroll.grid_columnconfigure(0, weight=1)
+        self.editor_scroll.grid_columnconfigure(1, weight=1)
 
         # 初始提示
-        self.result_box.configure(state="normal")
-        self.result_box.insert("1.0", "翻译结果将显示在这里...\n\n支持两种方式：\n1. 转录完成后点击「翻译字幕」自动导入\n2. 点击「选择 SRT 文件」加载本地字幕")
-        self.result_box.configure(state="disabled")
+        self._hint_label = ctk.CTkLabel(
+            self.editor_scroll,
+            text="翻译结果将显示在这里...\n\n"
+                 "支持两种方式：\n"
+                 "1. 转录完成后点击「翻译字幕」自动导入\n"
+                 "2. 点击「选择 SRT 文件」加载本地字幕",
+            text_color="gray", font=ctk.CTkFont(size=13),
+            justify="left",
+        )
+        self._hint_label.grid(row=0, column=0, columnspan=2, pady=20, padx=20, sticky="w")
 
     def _build_bottom_bar(self):
         """底部操作栏"""
@@ -254,15 +293,225 @@ class TranslateTab(ctk.CTkFrame):
         self.copy_btn.pack(side="left", padx=4, pady=4)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 编辑器操作
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _populate_source_only(self):
+        """加载数据后立即填充左栏原文，右栏 Entry 留空等翻译"""
+        self._clear_editor()
+
+        for i, text in enumerate(self.source_texts):
+            row_color = _ROW_COLORS[i % 2]
+
+            # 获取时间轴
+            timecode = ""
+            if self.segments_from_transcribe and i < len(self.segments_from_transcribe):
+                seg = self.segments_from_transcribe[i]
+                timecode = f"[{seg.start_fmt} -> {seg.end_fmt}]"
+            elif self.srt_segments and i < len(self.srt_segments):
+                seg = self.srt_segments[i]
+                timecode = f"[{seg['start']} -> {seg['end']}]"
+
+            header_text = f"#{i+1}  {timecode}" if timecode else f"#{i+1}"
+
+            # ── 左栏 ──
+            left_frame = ctk.CTkFrame(
+                self.editor_scroll, fg_color=row_color, corner_radius=0,
+            )
+            left_frame.grid(row=i, column=0, sticky="ew", padx=(0, 2), pady=0)
+            left_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                left_frame, text=header_text,
+                font=ctk.CTkFont(size=10), text_color="#666", anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 0))
+
+            source_label = ctk.CTkLabel(
+                left_frame, text=text,
+                font=ctk.CTkFont(size=13), anchor="w",
+                wraplength=400, justify="left",
+            )
+            source_label.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 4))
+
+            # ── 右栏 ──
+            right_frame = ctk.CTkFrame(
+                self.editor_scroll, fg_color=row_color, corner_radius=0,
+            )
+            right_frame.grid(row=i, column=1, sticky="ew", padx=(2, 0), pady=0)
+            right_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                right_frame, text=header_text,
+                font=ctk.CTkFont(size=10), text_color="#666", anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 0))
+
+            target_entry = ctk.CTkEntry(
+                right_frame, font=ctk.CTkFont(size=13), height=32,
+                placeholder_text="等待翻译...",
+            )
+            target_entry.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 4))
+
+            # 行点击高亮
+            row_idx = i
+            for widget in [left_frame, source_label]:
+                widget.bind("<Button-1>",
+                    lambda e, idx=row_idx: self._on_row_click(idx))
+            target_entry.bind("<FocusIn>",
+                lambda e, idx=row_idx: self._on_row_click(idx))
+
+            self._editor_rows.append({
+                "source_label": source_label,
+                "target_entry": target_entry,
+                "left_frame": left_frame,
+                "right_frame": right_frame,
+                "bg_color": row_color,
+            })
+
+        self.status_var.set(f"已加载 {len(self.source_texts)} 句，可开始翻译")
+
+    def _populate_editor(self, results: list[TranslateResult]):
+        """翻译完成后填充双栏编辑器"""
+        self._clear_editor()
+
+        for i, r in enumerate(results):
+            row_color = _ROW_COLORS[i % 2]
+
+            # 获取时间轴
+            timecode = ""
+            if self.segments_from_transcribe and i < len(self.segments_from_transcribe):
+                seg = self.segments_from_transcribe[i]
+                timecode = f"[{seg.start_fmt} -> {seg.end_fmt}]"
+            elif self.srt_segments and i < len(self.srt_segments):
+                seg = self.srt_segments[i]
+                timecode = f"[{seg['start']} -> {seg['end']}]"
+
+            # ── 左栏：序号 + 时间轴 + 原文（只读）──
+            left_frame = ctk.CTkFrame(
+                self.editor_scroll, fg_color=row_color,
+                corner_radius=0,
+            )
+            left_frame.grid(row=i, column=0, sticky="ew", padx=(0, 2), pady=0)
+            left_frame.grid_columnconfigure(0, weight=1)
+
+            header_text = f"#{i+1}  {timecode}" if timecode else f"#{i+1}"
+            ctk.CTkLabel(
+                left_frame, text=header_text,
+                font=ctk.CTkFont(size=10),
+                text_color="#666", anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 0))
+
+            source_label = ctk.CTkLabel(
+                left_frame, text=r.source,
+                font=ctk.CTkFont(size=13), anchor="w",
+                wraplength=400, justify="left",
+            )
+            source_label.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 4))
+
+            # ── 右栏：序号 + 时间轴 + 译文 Entry（可编辑）──
+            right_frame = ctk.CTkFrame(
+                self.editor_scroll, fg_color=row_color,
+                corner_radius=0,
+            )
+            right_frame.grid(row=i, column=1, sticky="ew", padx=(2, 0), pady=0)
+            right_frame.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                right_frame, text=header_text,
+                font=ctk.CTkFont(size=10),
+                text_color="#666", anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=6, pady=(4, 0))
+
+            target_entry = ctk.CTkEntry(
+                right_frame,
+                font=ctk.CTkFont(size=13),
+                height=32,
+            )
+            target_entry.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 4))
+            target_entry.insert(0, r.target if r.target else "")
+
+            # 行点击高亮
+            row_idx = i
+            for widget in [left_frame, source_label]:
+                widget.bind("<Button-1>",
+                    lambda e, idx=row_idx: self._on_row_click(idx))
+            target_entry.bind("<FocusIn>",
+                lambda e, idx=row_idx: self._on_row_click(idx))
+
+            # 保存引用
+            self._editor_rows.append({
+                "source_label": source_label,
+                "target_entry": target_entry,
+                "left_frame": left_frame,
+                "right_frame": right_frame,
+                "bg_color": row_color,
+            })
+
+    def _on_row_click(self, row_idx: int):
+        """点击行高亮"""
+        # 取消上一行高亮
+        if 0 <= self._selected_row < len(self._editor_rows):
+            prev = self._editor_rows[self._selected_row]
+            prev["left_frame"].configure(fg_color=prev["bg_color"])
+            prev["right_frame"].configure(fg_color=prev["bg_color"])
+
+        # 高亮当前行
+        if 0 <= row_idx < len(self._editor_rows):
+            curr = self._editor_rows[row_idx]
+            curr["left_frame"].configure(fg_color=_HIGHLIGHT_COLOR)
+            curr["right_frame"].configure(fg_color=_HIGHLIGHT_COLOR)
+            self._selected_row = row_idx
+
+    def _fill_batch_translations(self, batch_start: int, batch_end: int,
+                                  batch_results: list[TranslateResult]):
+        """逐批将译文填入右栏 Entry（由 batch_done_callback 触发，主线程执行）"""
+        for i, r in enumerate(batch_results):
+            row_idx = batch_start + i
+            if 0 <= row_idx < len(self._editor_rows):
+                entry = self._editor_rows[row_idx]["target_entry"]
+                # 翻译中 Entry 处于 disabled 状态，需临时解锁才能写入
+                entry.configure(state="normal")
+                entry.delete(0, "end")
+                entry.insert(0, r.target if r.target else "")
+                # 移除 placeholder 视觉效果
+                if r.target:
+                    entry.configure(placeholder_text="")
+                # 写入后重新禁用，防止翻译期间用户误编辑
+                if self.is_running:
+                    entry.configure(state="disabled")
+
+    def _clear_editor(self):
+        """清空编辑器所有行"""
+        for row in self._editor_rows:
+            row["left_frame"].destroy()
+            row["right_frame"].destroy()
+        self._editor_rows.clear()
+        self._selected_row = -1
+
+        # 移除提示标签（如果还在）
+        if hasattr(self, "_hint_label") and self._hint_label.winfo_exists():
+            self._hint_label.destroy()
+
+    def _collect_translations_from_editor(self) -> list[TranslateResult]:
+        """从编辑器 Entry 收集用户可能修改过的译文"""
+        results = []
+        for i, row in enumerate(self._editor_rows):
+            target = row["target_entry"].get().strip()
+            source = self.source_texts[i] if i < len(self.source_texts) else ""
+            results.append(TranslateResult(
+                index=i,
+                source=source,
+                target=target,
+                success=bool(target),
+            ))
+        return results
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 外部接口（供转录 Tab / main_ui 调用）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def load_from_transcribe(self, segments, source_lang: str = ""):
         """
         从转录 Tab 传入 segments，准备翻译。
-        Args:
-            segments: list[SegmentInfo]
-            source_lang: 检测到的源语言代码
         """
         self.segments_from_transcribe = segments
         self.srt_segments = None
@@ -275,9 +524,9 @@ class TranslateTab(ctk.CTkFrame):
             text_color="white",
         )
         logger.info(f"[TRANSLATE-UI] 从转录导入 {count} 句")
-
-        # 清空上次结果
         self._clear_results()
+        # 立即填充左栏预览
+        self._populate_source_only()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 配置管理
@@ -326,12 +575,10 @@ class TranslateTab(ctk.CTkFrame):
 
         provider = API_PROVIDERS[provider_name]
 
-        # 更新端点
         self.api_base_entry.delete(0, "end")
         if provider["api_base"]:
             self.api_base_entry.insert(0, provider["api_base"])
 
-        # 更新模型列表
         models = provider["models"] if provider["models"] else [""]
         self.model_menu.configure(values=models if models else ["自定义模型"])
         if provider["default_model"]:
@@ -356,7 +603,6 @@ class TranslateTab(ctk.CTkFrame):
         threading.Thread(target=_test, daemon=True).start()
 
     def _on_test_done(self, success: bool, msg: str):
-        """测试完成回调"""
         self.test_btn.configure(state="normal", text="测试连接")
         if success:
             self.status_var.set("API 连接成功")
@@ -401,6 +647,8 @@ class TranslateTab(ctk.CTkFrame):
         )
         logger.info(f"[TRANSLATE-UI] 加载 SRT: {name}, {count} 句")
         self._clear_results()
+        # 立即填充左栏预览
+        self._populate_source_only()
 
     def _on_translate(self):
         """开始翻译"""
@@ -413,12 +661,20 @@ class TranslateTab(ctk.CTkFrame):
             messagebox.showwarning("提示", "请填写 API 端点")
             return
 
-        # 保存配置
         self._save_config()
-
         self._set_running(True)
-        self._clear_results()
+
+        # 如果编辑器还没填充（直接点翻译没先加载预览），先填左栏
+        if not self._editor_rows:
+            self._populate_source_only()
+
+        # 清空右栏（重新翻译时）
+        for row in self._editor_rows:
+            row["target_entry"].delete(0, "end")
+            row["target_entry"].configure(placeholder_text="翻译中...")
+
         self.translate_results = []
+        self.progress.set(0)
 
         def _worker():
             try:
@@ -428,6 +684,9 @@ class TranslateTab(ctk.CTkFrame):
                     progress_callback=lambda done, total, preview:
                         self.after(0, lambda d=done, t=total, p=preview:
                             self._ui_on_progress(d, t, p)),
+                    batch_done_callback=lambda bs, be, br:
+                        self.after(0, lambda s=bs, e=be, r=list(br):
+                            self._fill_batch_translations(s, e, r)),
                     cancel_check=lambda: self.should_cancel,
                 )
                 self.after(0, lambda r=results: self._ui_on_done(r))
@@ -440,7 +699,6 @@ class TranslateTab(ctk.CTkFrame):
         self.worker_thread.start()
 
     def _on_cancel(self):
-        """取消翻译"""
         self.should_cancel = True
         self.status_var.set("正在取消...")
 
@@ -449,47 +707,22 @@ class TranslateTab(ctk.CTkFrame):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _ui_on_progress(self, completed: int, total: int, preview: str):
-        """翻译进度更新"""
         ratio = completed / total if total > 0 else 0
         self.progress.set(ratio)
         self.status_var.set(f"翻译中 {completed}/{total}  {preview}")
 
     def _ui_on_done(self, results: list[TranslateResult]):
-        """翻译完成"""
+        """翻译完成 → 收尾（编辑器已逐批填充完毕）"""
         self.translate_results = results
         success_count = sum(1 for r in results if r.success)
         total = len(results)
-
-        # 显示结果（带时间轴）
-        self.result_box.configure(state="normal")
-        self.result_box.delete("1.0", "end")
-
-        for i, r in enumerate(results):
-            # 获取时间轴信息
-            timecode = ""
-            if self.segments_from_transcribe and i < len(self.segments_from_transcribe):
-                seg = self.segments_from_transcribe[i]
-                timecode = f"  [{seg.start_fmt} -> {seg.end_fmt}]"
-            elif self.srt_segments and i < len(self.srt_segments):
-                seg = self.srt_segments[i]
-                timecode = f"  [{seg['start']} -> {seg['end']}]"
-
-            status = "✓" if r.success else "✗"
-            line = (
-                f"#{i+1}{timecode}\n"
-                f"  原: {r.source}\n"
-                f"  译: {r.target}\n\n"
-            )
-            self.result_box.insert("end", line)
-
-        self.result_box.configure(state="disabled")
 
         self.progress.set(1.0)
         if self.should_cancel:
             self.status_var.set(f"已取消 (已翻译 {success_count}/{total} 句)")
         else:
             self.status_var.set(
-                f"翻译完成！{success_count}/{total} 句成功"
+                f"翻译完成！{success_count}/{total} 句成功，可直接编辑译文"
             )
 
         # 启用保存按钮
@@ -500,29 +733,28 @@ class TranslateTab(ctk.CTkFrame):
         self._set_running(False)
 
     def _ui_on_error(self, error_msg: str):
-        """翻译出错"""
         self.status_var.set(f"翻译出错: {error_msg[:80]}")
         self.progress.set(0)
         self._set_running(False)
         messagebox.showerror("翻译错误", error_msg)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # 导出
+    # 导出（从编辑器 Entry 收集最新译文）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _on_save_translated_srt(self):
-        """保存纯翻译 SRT"""
         self._save_srt(bilingual=False)
 
     def _on_save_bilingual_srt(self):
-        """保存双语 SRT"""
         self._save_srt(bilingual=True)
 
     def _save_srt(self, bilingual: bool):
-        """保存 SRT 文件"""
-        if not self.translate_results:
+        if not self._editor_rows:
             messagebox.showinfo("提示", "没有翻译结果可保存")
             return
+
+        # 从编辑器收集最新译文（用户可能手动改过）
+        current_results = self._collect_translations_from_editor()
 
         suffix = "_bilingual.srt" if bilingual else "_translated.srt"
 
@@ -541,14 +773,13 @@ class TranslateTab(ctk.CTkFrame):
         if not save_path:
             return
 
-        # 根据数据来源构建 SRT
         if self.srt_segments is not None:
             srt_text = build_srt(
-                self.srt_segments, self.translate_results, bilingual=bilingual
+                self.srt_segments, current_results, bilingual=bilingual
             )
         elif self.segments_from_transcribe is not None:
             srt_text = build_srt_from_segments(
-                self.segments_from_transcribe, self.translate_results,
+                self.segments_from_transcribe, current_results,
                 bilingual=bilingual,
             )
         else:
@@ -559,12 +790,15 @@ class TranslateTab(ctk.CTkFrame):
         self.status_var.set(f"已保存: {Path(save_path).name}")
 
     def _on_copy(self):
-        """复制译文"""
-        if not self.translate_results:
+        if not self._editor_rows:
             return
-        text = "\n".join(r.target for r in self.translate_results if r.target)
+        texts = []
+        for row in self._editor_rows:
+            t = row["target_entry"].get().strip()
+            if t:
+                texts.append(t)
         self.clipboard_clear()
-        self.clipboard_append(text)
+        self.clipboard_append("\n".join(texts))
         self.status_var.set("已复制到剪贴板")
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -572,7 +806,6 @@ class TranslateTab(ctk.CTkFrame):
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _get_translate_config(self) -> TranslateConfig:
-        """从 UI 控件收集翻译配置"""
         return TranslateConfig(
             api_base=self.api_base_entry.get().strip(),
             api_key=self.api_key_entry.get().strip(),
@@ -582,7 +815,6 @@ class TranslateTab(ctk.CTkFrame):
         )
 
     def _set_running(self, running: bool):
-        """设置运行状态，锁定/解锁 UI"""
         self.is_running = running
         self.should_cancel = False
 
@@ -602,6 +834,9 @@ class TranslateTab(ctk.CTkFrame):
             self.save_srt_btn.configure(state=state_off)
             self.save_bilingual_btn.configure(state=state_off)
             self.copy_btn.configure(state=state_off)
+            # 翻译中禁用编辑器
+            for row in self._editor_rows:
+                row["target_entry"].configure(state=state_off)
         else:
             self.translate_btn.configure(state=state_on)
             self.cancel_btn.configure(state=state_off)
@@ -612,13 +847,13 @@ class TranslateTab(ctk.CTkFrame):
             self.model_menu.configure(state=state_on)
             self.target_lang_menu.configure(state=state_on)
             self.bilingual_check.configure(state=state_on)
+            # 翻译完启用编辑器
+            for row in self._editor_rows:
+                row["target_entry"].configure(state=state_on)
 
     def _clear_results(self):
-        """清空结果区域"""
+        self._clear_editor()
         self.translate_results = []
-        self.result_box.configure(state="normal")
-        self.result_box.delete("1.0", "end")
-        self.result_box.configure(state="disabled")
         self.progress.set(0)
         self.status_var.set("就绪")
         self.save_srt_btn.configure(state="disabled")

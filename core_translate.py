@@ -217,6 +217,7 @@ class TranslationEngine:
         self,
         texts: list[str],
         progress_callback: Callable[[int, int, str], None] | None = None,
+        batch_done_callback: Callable[[int, int, list[TranslateResult]], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranslateResult]:
         """
@@ -225,6 +226,8 @@ class TranslationEngine:
         Args:
             texts: 要翻译的文本列表（对应 SRT 每句的文本）
             progress_callback: 进度回调 (completed, total, current_text)
+            batch_done_callback: 每批完成后回调 (batch_start, batch_end, batch_results)
+                                 batch_results 是这一批对应位置的 TranslateResult 列表
             cancel_check: 取消检查函数，返回 True 时中止
 
         Returns:
@@ -307,9 +310,16 @@ class TranslationEngine:
                             completed, total,
                             f"[降级] {global_idx+1}/{total}"
                         )
+                # 降级批次完成后也回调
+                if batch_done_callback:
+                    batch_results = results[batch_start:batch_end]
+                    batch_done_callback(batch_start, batch_end, batch_results)
                 continue  # 跳过下面的 completed 更新
 
             completed += batch_size
+            if batch_done_callback:
+                batch_results = results[batch_start:batch_end]
+                batch_done_callback(batch_start, batch_end, batch_results)
             if progress_callback:
                 preview = ""
                 # 取最后一句有翻译的作为预览
