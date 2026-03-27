@@ -33,8 +33,20 @@ from PyInstaller.utils.hooks import (
 # 项目路径
 # ═══════════════════════════════════════════════════════════════════════════
 
-SPEC_DIR = os.path.abspath(os.path.dirname(SPECPATH))
-PROJECT_DIR = SPEC_DIR
+SPEC_DIR = os.path.abspath(os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.path.dirname(SPECPATH))
+# 确保 PROJECT_DIR 是 LWF.spec 所在目录
+# SPECPATH 在某些环境下会指向 workspace 根目录，所以做一次校验
+if os.path.isfile(os.path.join(SPEC_DIR, "main_ui.py")):
+    PROJECT_DIR = SPEC_DIR
+else:
+    # fallback: 找到包含 main_ui.py 的目录
+    for candidate in [SPEC_DIR, os.path.join(SPEC_DIR, "LWF_v2"), os.getcwd()]:
+        if os.path.isfile(os.path.join(candidate, "main_ui.py")):
+            PROJECT_DIR = candidate
+            break
+    else:
+        PROJECT_DIR = SPEC_DIR
+print(f"[LWF.spec] PROJECT_DIR = {PROJECT_DIR}")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 排除巨型库
