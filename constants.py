@@ -10,7 +10,7 @@ constants.py — LWF 全局常量定义
 # ═══════════════════════════════════════════════════════════════════════════
 
 APP_NAME = "Lite-Whisper-Faster"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -119,6 +119,12 @@ DEFAULT_CONFIG = {
     "theme": "dark",              # dark / light
     "last_output_dir": "",
     "max_concurrent": 1,          # 预留：批量处理并发数
+    # ── 翻译模块 ──
+    "translate_provider": "DeepSeek",
+    "translate_api_base": "https://api.deepseek.com/v1",
+    "translate_api_key": "",
+    "translate_model": "deepseek-chat",
+    "translate_target_lang": "简体中文",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

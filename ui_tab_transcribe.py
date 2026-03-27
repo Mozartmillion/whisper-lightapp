@@ -41,6 +41,11 @@ class TranscribeTab(ctk.CTkFrame):
         self.worker_thread: threading.Thread | None = None
         self.all_segments: list[SegmentInfo] = []
         self.audio_duration: float = 0.0
+        self.detected_language: str = ""    # 转录检测到的语言
+
+        # 翻译联动（由 main_ui 注入）
+        self.translate_tab = None
+        self.tabview = None
 
         self._build_ui()
 
@@ -214,6 +219,15 @@ class TranscribeTab(ctk.CTkFrame):
         )
         self.clear_btn.pack(side="left", padx=4, pady=8)
 
+        # 翻译联动按钮（右侧）
+        self.translate_btn = ctk.CTkButton(
+            frame, text="🌐 翻译字幕", width=110,
+            fg_color="#28a745", hover_color="#218838",
+            command=self._on_goto_translate,
+            state="disabled",
+        )
+        self.translate_btn.pack(side="right", padx=(4, 12), pady=8)
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 刷新模型列表（供外部调用）
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -320,6 +334,28 @@ class TranscribeTab(ctk.CTkFrame):
             srt_text = segments_to_srt(self.all_segments)
             Path(save_path).write_text(srt_text, encoding="utf-8")
             self.status_var.set(f"✅ 已保存: {Path(save_path).name}")
+
+    def _on_goto_translate(self):
+        """把转录结果传给翻译 Tab 并跳转"""
+        if not self.all_segments:
+            self.status_var.set("没有可翻译的内容")
+            return
+
+        if self.translate_tab is None:
+            messagebox.showwarning("提示", "翻译模块未就绪")
+            return
+
+        # 传递数据
+        self.translate_tab.load_from_transcribe(
+            segments=self.all_segments,
+            source_lang=self.detected_language,
+        )
+
+        # 切换到翻译 Tab
+        if self.tabview:
+            self.tabview.set("🌐 翻译")
+
+        self.status_var.set("已导入到翻译页面")
 
     def _on_clear(self):
         self.all_segments.clear()
@@ -441,6 +477,11 @@ class TranscribeTab(ctk.CTkFrame):
 
     def _ui_on_segment(self, seg: SegmentInfo):
         self.all_segments.append(seg)
+
+        # 第一句时记录检测到的语言
+        if seg.index == 1 and seg.language:
+            self.detected_language = seg.language
+
         line = f"[{seg.start_fmt} → {seg.end_fmt}]  {seg.text}\n"
         self.result_box.configure(state="normal")
         self.result_box.insert("end", line)
@@ -462,6 +503,8 @@ class TranscribeTab(ctk.CTkFrame):
             f"✅ 转录完成！共 {seg_count} 句，耗时 {elapsed:.1f} 秒"
         )
         self._set_running(False)
+        # 启用翻译联动按钮
+        self.translate_btn.configure(state="normal")
 
     def _ui_on_cancelled(self):
         count = len(self.all_segments)

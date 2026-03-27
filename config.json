@@ -1,5 +1,5 @@
 {
-  "version": "2.2.0",
+  "version": "2.3.0",
   "default_model": "base",
   "default_language": "auto",
   "prefer_gpu": true,
@@ -9,5 +9,10 @@
   "vad_min_silence_ms": 500,
   "theme": "dark",
   "last_output_dir": "",
-  "max_concurrent": 1
+  "max_concurrent": 1,
+  "translate_provider": "DeepSeek",
+  "translate_api_base": "https://api.deepseek.com/v1",
+  "translate_api_key": "sk-c903319b3c1f474aabc25121168c053b",
+  "translate_model": "deepseek-chat",
+  "translate_target_lang": "简体中文"
 }

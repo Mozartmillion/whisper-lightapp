@@ -6,6 +6,7 @@ main_ui.py — LWF v2.0 GUI 入口
 
 Tab 页结构：
   - 🎙 转录：文件选择 → 参数设置 → 转录 → 结果导出
+  - 🌐 翻译：API 配置 → 字幕翻译 → 双语/译文导出
   - 📦 模型管理：模型列表 → 下载 / 删除
   - ⚙ 设置：镜像地址、默认参数、关于信息
 """
@@ -23,6 +24,7 @@ from model_manager import ModelManager
 from ui_tab_transcribe import TranscribeTab
 from ui_tab_models import ModelsTab
 from ui_tab_settings import SettingsTab
+from ui_tab_translate import TranslateTab
 
 logger = logging.getLogger("LWF")
 
@@ -74,13 +76,14 @@ class LWFApp(ctk.CTk):
         self.tabview = ctk.CTkTabview(self)
         self.tabview.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 4))
 
-        # 创建三个 Tab
+        # 创建四个 Tab
         tab_transcribe = self.tabview.add("🎙 转录")
+        tab_translate = self.tabview.add("🌐 翻译")
         tab_models = self.tabview.add("📦 模型管理")
         tab_settings = self.tabview.add("⚙ 设置")
 
         # 让每个 Tab 内容区填满
-        for tab in [tab_transcribe, tab_models, tab_settings]:
+        for tab in [tab_transcribe, tab_translate, tab_models, tab_settings]:
             tab.grid_rowconfigure(0, weight=1)
             tab.grid_columnconfigure(0, weight=1)
 
@@ -90,6 +93,15 @@ class LWFApp(ctk.CTk):
             model_manager=self.model_manager,
         )
         self.transcribe_tab.grid(row=0, column=0, sticky="nsew")
+
+        self.translate_tab = TranslateTab(
+            tab_translate, config=self.config,
+        )
+        self.translate_tab.grid(row=0, column=0, sticky="nsew")
+
+        # 把翻译 Tab 引用传给转录 Tab，用于联动
+        self.transcribe_tab.translate_tab = self.translate_tab
+        self.transcribe_tab.tabview = self.tabview
 
         self.models_tab = ModelsTab(
             tab_models, model_manager=self.model_manager,
