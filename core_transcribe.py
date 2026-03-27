@@ -334,10 +334,18 @@ def transcribe_stream(
     # 缓冲区：持有上一个片段，等下一个来了才决定是否合并
     buffer: tuple[float, float, str] | None = None
 
+    # 获取语言感知的参数配置
+    _profile = _get_lang_profile(detected_lang)
+    _buf_joiner = _profile["joiner"]
+    _buf_min_chars = _profile["min_chars"]
+    _buf_min_duration = _profile["min_duration"]
+    _buf_force_split_duration = _profile["force_split_duration"]
+    _buf_force_split_chars = _profile["force_split_chars"]
+
     def _is_short(start, end, text):
-        """判断片段是否过短，需要合并（不再用词数判断，避免日语/中文误合并）"""
-        return (len(text) < _MIN_CHARS
-                or (end - start) < _MIN_DURATION)
+        """判断片段是否过短，需要合并（使用语言感知的参数）"""
+        return (len(text) < _buf_min_chars
+                or (end - start) < _buf_min_duration)
 
     def _yield_seg(start, end, text):
         """输出一个最终的 SegmentInfo"""
@@ -355,7 +363,7 @@ def transcribe_stream(
         return seg_info
 
     for segment in segments_iter:
-        sub_segments = _split_segment_by_sentences(segment)
+        sub_segments = _split_segment_by_sentences(segment, lang=detected_lang)
 
         for start, end, text in sub_segments:
             text = text.strip()
@@ -370,8 +378,8 @@ def transcribe_stream(
                 buf_start, buf_end, buf_text = buffer
                 merged_duration = end - buf_start
                 merged_chars = len(buf_text) + len(text)
-                if merged_duration <= _FORCE_SPLIT_DURATION and merged_chars <= _FORCE_SPLIT_CHARS:
-                    buffer = (buf_start, end, buf_text + text)
+                if merged_duration <= _buf_force_split_duration and merged_chars <= _buf_force_split_chars:
+                    buffer = (buf_start, end, buf_text + _buf_joiner + text)
                 else:
                     # 合并后超限，强制输出缓冲区
                     seg = _yield_seg(*buffer)
@@ -383,8 +391,8 @@ def transcribe_stream(
                 buf_start, buf_end, buf_text = buffer
                 merged_duration = end - buf_start
                 merged_chars = len(buf_text) + len(text)
-                if merged_duration <= _FORCE_SPLIT_DURATION and merged_chars <= _FORCE_SPLIT_CHARS:
-                    buffer = (buf_start, end, buf_text + text)
+                if merged_duration <= _buf_force_split_duration and merged_chars <= _buf_force_split_chars:
+                    buffer = (buf_start, end, buf_text + _buf_joiner + text)
                 else:
                     # 合并后超限，先输出缓冲区，短片段存入新缓冲
                     seg = _yield_seg(*buffer)
@@ -419,72 +427,106 @@ def transcribe_stream(
 # 句子切分（语义分句 + 规则兜底）
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ---------- 字幕参数 ----------
-_MAX_CHARS_PER_SUBTITLE = 80     # 每屏最大字符数（约 2 行 x 40 字符）
-_MAX_DURATION = 8.0              # wtpsplit 句超过此时长就二次规则切分（秒）
-_FORCE_SPLIT_DURATION = 6.0      # 规则切分时单句最大时长（秒）
-_FORCE_SPLIT_CHARS = 80          # 规则切分时单句最大字符数
+# ---------- 语言感知的字幕参数 ----------
+# CJK 语言（日/中/韩）: 字符信息密度高，每字≈1语义单位
+# 拉丁语言（英/法/德等）: 字符信息密度低，每字只是字母
+_LANG_PROFILES = {
+    "cjk": {  # 日语、中文、韩语
+        "max_chars_per_subtitle": 40,   # CJK 字符信息密度高，40字已经很长
+        "max_duration": 8.0,            # wtpsplit 句超过此时长就二次规则切分
+        "force_split_duration": 6.0,    # 规则切分时单句最大时长
+        "force_split_chars": 40,        # 规则切分时单句最大字符数
+        "min_chars": 3,                 # 3个CJK字符就有语义
+        "min_duration": 0.8,
+        "joiner": "",                   # CJK 不需要空格拼接
+        "clause_split_duration": 3.0,   # 次级标点处断句的最小时长
+        "clause_split_chars": 25,       # 次级标点处断句的最小字符数
+        "min_chunk_chars": 15,          # 强制切分时每段最少字符
+    },
+    "latin": {  # 英语、法语、德语、西班牙语等
+        "max_chars_per_subtitle": 80,   # 英语 80 字符 ≈ 12-15 单词
+        "max_duration": 8.0,
+        "force_split_duration": 6.0,
+        "force_split_chars": 80,
+        "min_chars": 10,                # 英语 10 字符 ≈ 2 个短单词
+        "min_duration": 0.8,
+        "joiner": " ",                  # 拉丁语系需要空格拼接
+        "clause_split_duration": 3.0,
+        "clause_split_chars": 40,
+        "min_chunk_chars": 30,
+    },
+}
+
+# 语言代码 → profile 映射
+_CJK_LANGS = {"ja", "zh", "ko", "yue"}   # 日语、中文、韩语、粤语
+
+def _get_lang_profile(lang: str | None) -> dict:
+    """根据语言代码获取对应的切分参数配置"""
+    if lang and lang.lower() in _CJK_LANGS:
+        return _LANG_PROFILES["cjk"]
+    return _LANG_PROFILES["latin"]
 
 # ---------- 规则切分的标点/连词 ----------
 _SENTENCE_ENDINGS = {'.', '!', '?', '。', '！', '？', '；', '…'}
-_CLAUSE_ENDINGS = {',', '，', ':', '：', ';'}
+_CLAUSE_ENDINGS = {',', '，', ':', '：', ';', '、'}
 _BREAK_BEFORE_WORDS = {
     'and', 'but', 'or', 'so', 'because', 'when', 'where', 'which',
     'that', 'if', 'while', 'although', 'though', 'since', 'unless',
     'before', 'after', 'like', 'as', 'than',
 }
 
-# ---------- 过短片段的判定阈值 ----------
-_MIN_CHARS = 5          # 少于 5 个字符的片段需要合并
-_MIN_WORDS = 2          # 少于 2 个词的片段需要合并
-_MIN_DURATION = 0.8     # 少于 0.8 秒的片段需要合并
+# ---------- 兼容旧代码的默认值（fallback 用） ----------
+_MIN_CHARS = 5
+_MIN_WORDS = 2
+_MIN_DURATION = 0.8
+_MAX_DURATION = 8.0
+_FORCE_SPLIT_DURATION = 6.0
+_FORCE_SPLIT_CHARS = 80
 
 
-def _split_segment_by_sentences(segment) -> list[tuple[float, float, str]]:
+def _split_segment_by_sentences(segment, lang: str | None = None) -> list[tuple[float, float, str]]:
     """
     将一个 faster-whisper segment 切分为适合字幕的短句。
 
     优先使用 wtpsplit SaT 语义分句（AI 模型，85+ 语言，语义完整性最优），
     如果 wtpsplit 不可用则回退到规则切分。
 
-    核心流程（wtpsplit 路径）：
-    1. 从 segment 提取所有词级时间戳
-    2. 拼接完整文本 → 交给 wtpsplit 做语义分句
-    3. 用词级时间戳反算每句的起止时间
-    4. 对超长句做二次规则切分（字幕长度兜底）
-    5. 合并过短片段
+    参数:
+        segment: faster-whisper segment 对象
+        lang: 语言代码（如 'ja', 'en', 'zh'），用于语言感知的参数调整
     """
     words = segment.words if hasattr(segment, 'words') and segment.words else None
 
     if not words:
         return [(segment.start, segment.end, segment.text.strip())]
 
+    profile = _get_lang_profile(lang)
+
     # 尝试语义分句
     sat = _get_sat_model()
     if sat is not None:
         try:
-            return _split_with_wtpsplit(words, sat)
+            return _split_with_wtpsplit(words, sat, profile=profile)
         except Exception as e:
             logger.warning(f"[CORE] wtpsplit 分句失败，回退规则切分: {e}")
 
     # 规则切分（fallback）
-    return _split_with_rules(words, segment)
+    return _split_with_rules(words, segment, profile=profile)
 
 
-def _split_with_wtpsplit(words, sat) -> list[tuple[float, float, str]]:
+def _split_with_wtpsplit(words, sat, profile: dict | None = None) -> list[tuple[float, float, str]]:
     """
     使用 wtpsplit SaT 模型做语义分句，再用词级时间戳反算时间轴。
 
     v2.1.1 修复版 — 改用词索引直接映射，彻底解决日语等无空格语言的映射错乱问题。
-
-    步骤：
-    1. 拼接所有词的 stripped 文本（去掉 whisper 返回的前导空格），
-       用分隔符标记词边界，同时记录每个词在拼接文本中的字符区间
-    2. wtpsplit 对拼接文本做语义分句
-    3. 根据每个句子在拼接文本中的字符位置，反查词索引区间 → 精确取时间戳
-    4. 对超过 _MAX_DURATION 的句子做二次规则切分（字幕显示限制）
-    5. 合并过短片段
+    v2.2.0 — 支持语言感知参数（profile）。
     """
+    if profile is None:
+        profile = _LANG_PROFILES["latin"]
+
+    p_max_duration = profile["max_duration"]
+    p_force_split_chars = profile["force_split_chars"]
+    p_min_chunk_chars = profile["min_chunk_chars"]
     # ── Step 1: 构建拼接文本 + 词的字符区间索引 ──
     # word_spans[i] = (start_char, end_char) 表示第 i 个词在 full_text 中的字符区间 [start, end)
     word_spans: list[tuple[int, int]] = []
@@ -573,17 +615,17 @@ def _split_with_wtpsplit(words, sat) -> list[tuple[float, float, str]]:
         return [(words[0].start, words[-1].end, full_text)]
 
     # ── Step 4: 对超长句做二次规则切分（字幕显示限制） ──
-    # 同时强制执行 _MAX_DURATION（5秒）限制
+    # 同时强制执行 max_duration 限制
     final_results = []
     for start, end, text in results:
         duration = end - start
-        if duration > _MAX_DURATION or len(text) > _FORCE_SPLIT_CHARS:
+        if duration > p_max_duration or len(text) > p_force_split_chars:
             # 收集这段时间范围内的词
             sub_words = [w for w in words
                          if w.start >= start - 0.05 and w.end <= end + 0.05
                          and w.word.strip()]
             if len(sub_words) >= 2:
-                sub_results = _rule_split_words(sub_words)
+                sub_results = _rule_split_words(sub_words, profile=profile)
                 final_results.extend(sub_results)
             else:
                 final_results.append((start, end, text))
@@ -591,15 +633,13 @@ def _split_with_wtpsplit(words, sat) -> list[tuple[float, float, str]]:
             final_results.append((start, end, text))
 
     # ── Step 5: 合并过短片段 ──
-    final_results = _merge_short_segments(final_results)
+    final_results = _merge_short_segments(final_results, profile=profile)
 
     # ── Step 6: 纯字符数强制切分兜底 ──
-    # 解决 Whisper word timestamps 压缩（所有词挤在 1-2 秒）导致 Step 4 切分后
-    # 又被 Step 5 合并回去的问题。不看时间戳，纯按字符数切分，时间按比例分配。
     final_final = []
     for start, end, text in final_results:
-        if len(text) > _FORCE_SPLIT_CHARS:
-            chunks = _force_split_by_chars(text, start, end)
+        if len(text) > p_force_split_chars:
+            chunks = _force_split_by_chars(text, start, end, profile=profile)
             final_final.extend(chunks)
         else:
             final_final.append((start, end, text))
@@ -609,25 +649,30 @@ def _split_with_wtpsplit(words, sat) -> list[tuple[float, float, str]]:
 
 
 def _force_split_by_chars(
-    text: str, start: float, end: float
+    text: str, start: float, end: float, profile: dict | None = None
 ) -> list[tuple[float, float, str]]:
     """
     纯字符数强制切分（最终兜底）。
 
     当 Whisper 的 word timestamps 全部被压缩到极短时间范围（1-2 秒）时，
     基于时间戳的切分和合并逻辑都会失效。这个函数不看时间戳，
-    纯按字符数在日语标点/逗号/助词处切分，时间按字符比例均匀分配。
+    纯按字符数在标点处切分，时间按字符比例均匀分配。
     """
-    if len(text) <= _FORCE_SPLIT_CHARS:
+    if profile is None:
+        profile = _LANG_PROFILES["latin"]
+
+    max_chars = profile["force_split_chars"]
+    min_chunk = profile["min_chunk_chars"]
+
+    if len(text) <= max_chars:
         return [(start, end, text)]
 
     duration = end - start
     total_chars = len(text)
 
     # 优先在标点处切分
-    # 日语标点优先级: 句号 > 逗号/顿号 > 读点 > 括号后 > 中间点
-    _SPLIT_POINTS = set('。！？、，,. ）」』】》')
-    _GOOD_SPLIT_POINTS = set('。！？')
+    _SPLIT_POINTS = set('。！？、，,. ）」』】》!?')
+    _GOOD_SPLIT_POINTS = set('。！？.!?')
 
     chunks = []
     chunk_start_char = 0
@@ -635,13 +680,13 @@ def _force_split_by_chars(
     i = 0
     while i < total_chars:
         remaining = total_chars - chunk_start_char
-        if remaining <= _FORCE_SPLIT_CHARS:
+        if remaining <= max_chars:
             # 剩余部分不超限，直接收尾
             break
 
-        # 在 [chunk_start + 30, chunk_start + _FORCE_SPLIT_CHARS] 范围内找最佳切分点
-        search_start = chunk_start_char + 30  # 至少保证每段 30 字
-        search_end = min(chunk_start_char + _FORCE_SPLIT_CHARS, total_chars)
+        # 在 [chunk_start + min_chunk, chunk_start + max_chars] 范围内找最佳切分点
+        search_start = chunk_start_char + min_chunk
+        search_end = min(chunk_start_char + max_chars, total_chars)
 
         best_pos = -1
         # 先找句号类标点
@@ -710,13 +755,21 @@ def _fuzzy_find(haystack: str, needle: str, start: int = 0) -> int:
     return -1
 
 
-def _rule_split_words(words_list) -> list[tuple[float, float, str]]:
+def _rule_split_words(words_list, profile: dict | None = None) -> list[tuple[float, float, str]]:
     """
     纯规则切分一组词（用于对 wtpsplit 产出的超长句做二次切分）。
-    规则与原始的 _split_segment_by_sentences 一致。
+    v2.2.0 — 支持语言感知参数（profile）。
     """
     if not words_list:
         return []
+
+    if profile is None:
+        profile = _LANG_PROFILES["latin"]
+
+    p_force_split_duration = profile["force_split_duration"]
+    p_force_split_chars = profile["force_split_chars"]
+    p_clause_split_duration = profile["clause_split_duration"]
+    p_clause_split_chars = profile["clause_split_chars"]
 
     results = []
     current_words = []
@@ -746,18 +799,18 @@ def _rule_split_words(words_list) -> list[tuple[float, float, str]]:
         # 规则 1: 句子结束标点
         if word_text and word_text[-1] in _SENTENCE_ENDINGS:
             should_split = True
-        # 规则 2: 次级标点 + 超阈值
+        # 规则 2: 次级标点 + 超阈值（使用语言感知的参数）
         elif word_text and word_text[-1] in _CLAUSE_ENDINGS:
-            if current_duration >= 3.0 or current_chars >= 50:
+            if current_duration >= p_clause_split_duration or current_chars >= p_clause_split_chars:
                 should_split = True
-        # 规则 3: 连词前断
+        # 规则 3: 连词前断（主要对英语有效）
         elif (i + 1 < len(words_list)
-              and current_duration >= 3.0
+              and current_duration >= p_clause_split_duration
               and words_list[i + 1].word.strip().lower() in _BREAK_BEFORE_WORDS
-              and current_chars >= 30):
+              and current_chars >= p_clause_split_chars):
             should_split = True
         # 规则 4: 硬限制
-        elif current_duration >= _FORCE_SPLIT_DURATION or current_chars >= _FORCE_SPLIT_CHARS:
+        elif current_duration >= p_force_split_duration or current_chars >= p_force_split_chars:
             should_split = True
 
         if should_split:
@@ -769,44 +822,60 @@ def _rule_split_words(words_list) -> list[tuple[float, float, str]]:
     return results
 
 
-def _split_with_rules(words, segment) -> list[tuple[float, float, str]]:
+def _split_with_rules(words, segment, profile: dict | None = None) -> list[tuple[float, float, str]]:
     """
     纯规则切分（wtpsplit 不可用时的 fallback）。
-    逻辑与原始实现完全一致。
+    v2.2.0 — 支持语言感知参数（profile）。
     """
-    results = _rule_split_words(words)
-    results = _merge_short_segments(results)
+    if profile is None:
+        profile = _LANG_PROFILES["latin"]
+
+    p_force_split_chars = profile["force_split_chars"]
+
+    results = _rule_split_words(words, profile=profile)
+    results = _merge_short_segments(results, profile=profile)
     # 兜底：强制切分超长条
     final = []
     for start, end, text in results:
-        if len(text) > _FORCE_SPLIT_CHARS:
-            final.extend(_force_split_by_chars(text, start, end))
+        if len(text) > p_force_split_chars:
+            final.extend(_force_split_by_chars(text, start, end, profile=profile))
         else:
             final.append((start, end, text))
     return final if final else [(segment.start, segment.end, segment.text.strip())]
 
 
 def _merge_short_segments(
-    segments: list[tuple[float, float, str]]
+    segments: list[tuple[float, float, str]],
+    profile: dict | None = None,
 ) -> list[tuple[float, float, str]]:
     """
     合并过短的字幕片段到相邻片段。
 
-    规则：如果一个片段太短（字符数 < _MIN_CHARS 或时长 < _MIN_DURATION），
+    规则：如果一个片段太短（字符数 < min_chars 或时长 < min_duration），
     将它合并到时间上更近的相邻片段（优先合并到后一个）。
-    合并后时长不得超过 _MAX_DURATION **且** 字符数不得超过 _FORCE_SPLIT_CHARS，
-    防止过度合并（尤其是 Whisper word timestamps 被压缩到极短范围的情况）。
+    合并后时长不得超过 max_duration **且** 字符数不得超过 force_split_chars，
+    防止过度合并。
+    v2.2.0 — 支持语言感知参数（profile）。
     """
     if len(segments) <= 1:
         return segments
+
+    if profile is None:
+        profile = _LANG_PROFILES["latin"]
+
+    p_min_chars = profile["min_chars"]
+    p_min_duration = profile["min_duration"]
+    p_max_duration = profile["max_duration"]
+    p_force_split_chars = profile["force_split_chars"]
+    p_joiner = profile["joiner"]
 
     merged = list(segments)
     changed = True
 
     def _can_merge(text_a: str, text_b: str, start: float, end: float) -> bool:
         """检查合并后是否在允许范围内（时长 + 字符数双重限制）"""
-        return ((end - start) <= _MAX_DURATION
-                and (len(text_a) + len(text_b)) <= _FORCE_SPLIT_CHARS)
+        return ((end - start) <= p_max_duration
+                and (len(text_a) + len(text_b)) <= p_force_split_chars)
 
     while changed:
         changed = False
@@ -816,15 +885,15 @@ def _merge_short_segments(
             char_count = len(text)
             duration = end - start
 
-            is_short = (char_count < _MIN_CHARS
-                        or duration < _MIN_DURATION)
+            is_short = (char_count < p_min_chars
+                        or duration < p_min_duration)
 
             if is_short and len(merged) > 1:
                 if i + 1 < len(merged):
                     # 尝试合并到后一个片段
                     next_start, next_end, next_text = merged[i + 1]
                     if _can_merge(text, next_text, start, next_end):
-                        merged[i + 1] = (start, next_end, text + next_text)
+                        merged[i + 1] = (start, next_end, text + p_joiner + next_text)
                         merged.pop(i)
                         changed = True
                     else:
@@ -833,7 +902,7 @@ def _merge_short_segments(
                     # 最后一个短片段，尝试合并到前一个
                     prev_start, prev_end, prev_text = merged[i - 1]
                     if _can_merge(prev_text, text, prev_start, end):
-                        merged[i - 1] = (prev_start, end, prev_text + text)
+                        merged[i - 1] = (prev_start, end, prev_text + p_joiner + text)
                         merged.pop(i)
                         changed = True
                     else:
